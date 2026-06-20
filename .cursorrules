@@ -1,0 +1,110 @@
+# tasks.nvim — Cursor Rules
+
+SYSTEM_CONTEXT: |
+  You are a senior Lua / Neovim plugin developer working on tasks.nvim.
+
+  tasks.nvim is a lightweight Neovim plugin that provides a persistent, toggleable
+  Markdown scratchpad. A single keymap (<leader>t) opens a floating or split window
+  onto a tasks.md file. The buffer is auto-saved on close. No external dependencies.
+
+  Required reading before any change:
+  - docs/architecture.mermaid: Module graph and data flow between init/window/config
+  - docs/technical.md: Full spec — config schema, API surface, window geometry, behaviour table
+  - tasks/tasks.md: MVP stories with acceptance criteria and task checklists
+  - docs/status.md: Current sprint progress and blockers
+
+  Stack:
+  - Language: Lua (Neovim native)
+  - Runtime: Neovim 0.8+
+  - APIs: vim.api.*, vim.fn.*, vim.keymap.set
+  - No external runtime dependencies
+
+ON_FILE_CHANGE: |
+  After any code change:
+  1. READ docs/architecture.mermaid — verify no module boundary violations
+     (window state must stay in window.lua; config access via config.get() only)
+  2. UPDATE docs/status.md — mark story task complete or note blockers
+  3. VALIDATE against docs/technical.md — config schema, behaviour table, API contracts
+  4. TICK OFF the checkbox in tasks/tasks.md for the completed sub-task
+
+LUA_GUIDELINES: |
+  Module pattern:
+  - Every module uses: local M = {} ... return M
+  - No globals. Use vim.g.loaded_tasks only for the load guard in plugin/tasks.lua.
+
+  Config:
+  - All modules read config via require('tasks.config').get()
+  - Never pass config as function arguments across module boundaries
+  - Config is a singleton resolved once by setup()
+
+  State:
+  - Window state (win_id, buf_id) lives exclusively in window.lua
+  - No other module reads or writes these values
+
+  Error handling:
+  - Wrap stale-handle vim.api calls in pcall
+  - Do not surface errors for expected conditions (e.g. closing already-closed window)
+  - Use vim.notify() only for genuinely unexpected failures
+
+  API preference:
+  - Prefer vim.api.* over vim.cmd where equivalent API exists
+  - Use vim.cmd('silent! write') for buffer writes (no pure API equivalent)
+  - Use vim.api.nvim_win_is_valid() and vim.api.nvim_buf_is_valid() before all handle operations
+
+  Naming:
+  - snake_case for all identifiers and file names
+  - Comment the why, not the what
+
+ARCHITECTURE: |
+  File: docs/architecture.mermaid
+  Module boundaries (STRICT — do not violate):
+
+  plugin/tasks.lua
+    - Only: load guard (vim.g.loaded_tasks), nothing else
+    - Does NOT call setup() — user does that in their config
+
+  lua/tasks/init.lua (public API)
+    - Exports: setup(user_opts), toggle()
+    - setup() calls config.apply() then registers keymap
+    - toggle() delegates entirely to window.toggle()
+    - No state, no vim.api window calls
+
+  lua/tasks/config.lua
+    - Holds default config table
+    - Exports: apply(user_opts), get()
+    - apply() uses vim.tbl_deep_extend('force', defaults, user_opts)
+    - Stores resolved config as module-level singleton
+
+  lua/tasks/window.lua
+    - Owns state: { buf_id, win_id }
+    - Exports: toggle(), open(), close()
+    - All nvim_open_win / nvim_win_close calls live here
+
+  Architectural violations to avoid:
+  - init.lua storing win_id or buf_id
+  - window.lua calling config.apply()
+  - plugin/tasks.lua calling setup() automatically
+
+TASK_WORKFLOW: |
+  Required files:
+  - tasks/tasks.md: Stories with acceptance criteria
+  - docs/status.md: Progress tracking
+  - docs/technical.md: Implementation spec
+
+  Workflow:
+  1. READ tasks/tasks.md — identify the story and its acceptance criteria
+  2. VALIDATE against docs/architecture.mermaid — confirm module placement
+  3. IMPLEMENT the minimum code to satisfy the acceptance criteria
+  4. VERIFY each acceptance criterion manually (no test framework for MVP)
+  5. UPDATE docs/status.md and tick off tasks/tasks.md checkbox
+
+VALIDATION_RULES: |
+  Before submitting any change, verify:
+  - [ ] vim.api handles are validated with is_valid() before use
+  - [ ] Buffer is reused across opens (not recreated each time)
+  - [ ] Config is read via config.get(), not passed as arguments
+  - [ ] Window state does not leak outside window.lua
+  - [ ] plugin/tasks.lua contains only the load guard
+  - [ ] filetype = 'markdown' is set on the buffer after creation
+  - [ ] File is created if missing before opening buffer
+  - [ ] silent! write is called before nvim_win_close in close()
