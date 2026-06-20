@@ -1,0 +1,49 @@
+graph TD
+    subgraph "User Layer"
+        U[Neovim User]
+        KM["&lt;leader&gt;t keymap"]
+    end
+
+    subgraph "Plugin Entry"
+        P["plugin/tasks.lua<br/>(auto-loaded by nvim)"]
+    end
+
+    subgraph "Public API — lua/tasks/init.lua"
+        SETUP["setup(user_config)"]
+        TOGGLE["toggle()"]
+    end
+
+    subgraph "Config — lua/tasks/config.lua"
+        DEFAULTS["Default config<br/>(path, window style)"]
+        MERGE["Merge user config<br/>over defaults"]
+        CFG["Resolved config table"]
+    end
+
+    subgraph "Window — lua/tasks/window.lua"
+        STATE["Window state<br/>(win_id, buf_id)"]
+        OPEN["open()"]
+        CLOSE["close() + autosave"]
+        FLOAT["nvim_open_win()<br/>floating, 80%, centered, rounded"]
+        SPLIT["nvim_open_win()<br/>left/right split, 30% width"]
+    end
+
+    subgraph "Filesystem"
+        FILE["tasks.md<br/>stdpath('data')/tasks.md<br/>(or user-defined path)"]
+    end
+
+    U -->|presses| KM
+    KM --> TOGGLE
+    P --> SETUP
+    SETUP --> MERGE
+    DEFAULTS --> MERGE
+    MERGE --> CFG
+    CFG --> TOGGLE
+    TOGGLE --> STATE
+    STATE -->|win not open| OPEN
+    STATE -->|win open| CLOSE
+    OPEN -->|style = floating| FLOAT
+    OPEN -->|style = left/right| SPLIT
+    OPEN --> FILE
+    CLOSE --> FILE
+    FLOAT --> FILE
+    SPLIT --> FILE
