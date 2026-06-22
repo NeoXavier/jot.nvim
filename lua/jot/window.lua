@@ -41,6 +41,8 @@ local function open_floating(buf_id, cfg)
     col      = col,
     style    = 'minimal',
     border   = cfg.window.border,
+    title = vim.fn.fnamemodify(cfg.path, ':t'),
+    title_pos = 'center',
   })
 end
 
@@ -60,12 +62,12 @@ function M.open()
   if cfg.window.style == 'floating' then
     open_floating(buf_id, cfg)
     -- inherit editor colors so Visual highlight remains visible
-    vim.wo[state.win_id].winhighlight = 'Normal:Normal,FloatBorder:Normal'
+    vim.wo[state.win_id].winhighlight = 'Normal:Normal,FloatBorder:Normal,FloatTitle:Normal'
   else
     open_split(buf_id, cfg)
   end
 
-  vim.wo[state.win_id].number = true
+  vim.wo[state.win_id].relativenumber = true
 end
 
 function M.close()
