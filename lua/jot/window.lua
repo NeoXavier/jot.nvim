@@ -19,9 +19,9 @@ local function get_or_create_buf()
   state.buf_id = vim.fn.bufadd(cfg.path)
   vim.bo[state.buf_id].buflisted = false
   vim.bo[state.buf_id].filetype  = 'markdown'
-  vim.api.nvim_buf_call(state.buf_id, function()
-    vim.cmd('silent! %d | read ' .. cfg.path)
-  end)
+
+  local lines = vim.fn.readfile(cfg.path)
+  vim.api.nvim_buf_set_lines(state.buf_id, 0, -1, false, lines)
 
   return state.buf_id
 end
