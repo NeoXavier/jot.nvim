@@ -1,49 +1,69 @@
 graph TD
     subgraph "User Layer"
         U[Neovim User]
-        KM["&lt;leader&gt;t keymap"]
+        KM["&lt;leader&gt;t (global toggle)"]
+        BK["&lt;leader&gt;1..9 / &lt;leader&gt;e / q<br/>(buffer-local, jot window only)"]
     end
 
     subgraph "Plugin Entry"
-        P["plugin/tasks.lua<br/>(auto-loaded by nvim)"]
+        P["plugin/jot.lua<br/>(auto-loaded, double-load guard)"]
     end
 
-    subgraph "Public API — lua/tasks/init.lua"
+    subgraph "Public API — lua/jot/init.lua"
         SETUP["setup(user_config)"]
         TOGGLE["toggle()"]
+        SWITCH["switch(slot)"]
+        MGR["open_manager()"]
     end
 
-    subgraph "Config — lua/tasks/config.lua"
-        DEFAULTS["Default config<br/>(path, window style)"]
-        MERGE["Merge user config<br/>over defaults"]
+    subgraph "Config — lua/jot/config.lua"
+        DEFAULTS["Default config<br/>(dir, window, keymaps, slots seed)"]
+        MERGE["Deep-merge user config"]
         CFG["Resolved config table"]
     end
 
-    subgraph "Window — lua/tasks/window.lua"
-        STATE["Window state<br/>(win_id, buf_id)"]
-        OPEN["open()"]
+    subgraph "Slots — lua/jot/slots.lua"
+        BIND["bindings<br/>(slot 1..9 -> abs path)"]
+        LOAD["load() / save()"]
+        MANAGER["open_manager()<br/>+ _commit()"]
+        JSON["slots.json<br/>stdpath('data')/jot/slots.json"]
+    end
+
+    subgraph "Window — lua/jot/window.lua"
+        STATE["state (win_id, current_slot)<br/>+ per-path buf cache"]
+        OPEN["open(cfg, slot)"]
+        SW["switch(cfg, slot)<br/>swap buffer in place + autosave"]
         CLOSE["close() + autosave"]
-        FLOAT["nvim_open_win()<br/>floating, 80%, centered, rounded"]
-        SPLIT["nvim_open_win()<br/>left/right split, 30% width"]
+        ATTACH["attach_keymaps()<br/>buffer-local switch/manager/close"]
     end
 
     subgraph "Filesystem"
-        FILE["tasks.md<br/>stdpath('data')/tasks.md<br/>(or user-defined path)"]
+        NOTES["Notes<br/>stdpath('data')/jot/*.md"]
     end
 
     U -->|presses| KM
+    U -->|inside window| BK
     KM --> TOGGLE
+    BK --> SWITCH
+    BK --> MGR
     P --> SETUP
     SETUP --> MERGE
     DEFAULTS --> MERGE
     MERGE --> CFG
+    SETUP --> LOAD
+    LOAD --> JSON
+    LOAD --> BIND
+    MGR --> MANAGER
+    MANAGER --> JSON
+    MANAGER --> BIND
     CFG --> TOGGLE
     TOGGLE --> STATE
     STATE -->|win not open| OPEN
     STATE -->|win open| CLOSE
-    OPEN -->|style = floating| FLOAT
-    OPEN -->|style = left/right| SPLIT
-    OPEN --> FILE
-    CLOSE --> FILE
-    FLOAT --> FILE
-    SPLIT --> FILE
+    SWITCH --> SW
+    OPEN --> BIND
+    SW --> BIND
+    OPEN --> ATTACH
+    OPEN --> NOTES
+    SW --> NOTES
+    CLOSE --> NOTES

@@ -1,237 +1,147 @@
-# tasks.nvim — Technical Specification
+# jot.nvim — Technical Specification
 
 ## Overview
 
-`tasks.nvim` is a lightweight Neovim plugin that provides a persistent, toggleable
-scratchpad for task notes, written in Markdown. It is designed to be minimal,
-fast, and unintrusive — a single keybind opens a floating or split window onto a
-persistent Markdown file.
+`jot.nvim` is a lightweight Neovim plugin for quick-access Markdown notes. A single
+global keybind (`<leader>t`) toggles one floating (or split) window. Inside that
+window, buffer-local hotkeys switch between up to nine notes and open a manager to
+assign notes to slots. All notes live in one directory (`stdpath('data')/jot`), and
+slot assignments are persisted to `slots.json` so they survive restarts.
+
+Key design points:
+- **One window, many notes** — switching swaps the buffer *in place* (a tabbed feel).
+- **Buffer-local hotkeys** — switch/manager/close keys fire only while the jot
+  window is focused, never globally.
+- **Persistent assignments** — the manager writes `slots.json`; config only seeds
+  the very first run.
+- **Autosave everywhere** — the current note is written on switch and on close.
 
 ---
 
 ## Stack
 
-| Concern       | Choice                                     |
-|---------------|--------------------------------------------|
-| Language       | Lua (Neovim native)                        |
-| Neovim API    | `vim.api.*`, `vim.fn.*`, `vim.keymap.set` |
-| File I/O      | Native Neovim buffer write (`:w`)         |
-| Min Neovim    | 0.8+ (stable `nvim_open_win` API)         |
+| Concern     | Choice                                          |
+|-------------|-------------------------------------------------|
+| Language    | Lua (Neovim native)                             |
+| Neovim API  | `vim.api.*`, `vim.fn.*`, `vim.keymap.set`, `vim.json` |
+| File I/O    | `vim.fn.writefile`/`readfile`, buffer `:w`      |
+| Min Neovim  | 0.8+ (stable `nvim_open_win` API)               |
 
 ---
 
 ## File Structure
 
 ```
-tasks.nvim/
+jot.nvim/
 ├── lua/
-│   └── tasks/
-│       ├── init.lua      # setup(), toggle() — public API surface
-│       ├── window.lua    # open/close/toggle window logic + state
-│       └── config.lua    # default config + user config merging
+│   └── jot/
+│       ├── init.lua      # setup(), toggle(), switch(), open_manager()
+│       ├── window.lua     # single-window state, buffer swap, buffer-local keymaps
+│       ├── slots.lua      # slot store, persistence (slots.json), manager UI
+│       └── config.lua     # defaults + user config merging
 ├── plugin/
-│   └── tasks.lua         # auto-loaded by Neovim; registers keymap
+│   └── jot.lua           # auto-loaded; double-load guard only
 ├── docs/
 │   ├── technical.md      # this file
 │   ├── architecture.mermaid
 │   └── status.md
-└── tasks/
-    └── tasks.md
+├── tasks/
+│   └── tasks.md
+└── tests/
+    ├── features/         # Gherkin scenarios
+    └── spec/             # plenary busted specs
 ```
 
 ---
 
 ## Configuration
 
-Users call `require('tasks').setup(opts)` in their Neovim config. All fields are
-optional — defaults are applied for anything omitted.
-
-### Schema
-
 ```lua
-require('tasks').setup({
-  -- Path to the task file. Created automatically if it does not exist.
-  -- Default: vim.fn.stdpath('data') .. '/tasks.md'
-  path = vim.fn.stdpath('data') .. '/tasks.md',
+require('jot').setup({
+  -- Directory holding all note files. Created on setup if missing.
+  -- Default: vim.fn.stdpath('data') .. '/jot'
+  dir = vim.fn.stdpath('data') .. '/jot',
 
   window = {
-    -- 'floating' | 'left' | 'right'
-    -- Default: 'floating'
-    style = 'floating',
-
-    -- Floating window options (ignored when style is 'left' or 'right')
-    width  = 0.8,   -- proportion of editor width
-    height = 0.8,   -- proportion of editor height
-    border = 'rounded', -- 'rounded' | 'single' | 'double' | 'none'
-
-    -- Split window options (ignored when style is 'floating')
-    split_width = 0.3, -- proportion of editor width
+    style       = 'floating',  -- 'floating' | 'left' | 'right'
+    width       = 0.8,         -- floating: proportion of editor width
+    height      = 0.8,         -- floating: proportion of editor height
+    border      = 'rounded',   -- 'rounded' | 'single' | 'double' | 'none'
+    split_width = 0.3,         -- left/right split: proportion of editor width
   },
 
   keymaps = {
-    -- Set to false to disable auto-registration and wire it up manually.
-    toggle = '<leader>t',
+    toggle        = '<leader>t',  -- global: open/close the jot window (false to disable)
+    manager       = '<leader>e',  -- buffer-local: open the slot manager
+    close         = 'q',          -- buffer-local: close the window
+    switch_prefix = '<leader>',   -- buffer-local: prefix + digit 1..9 switches slots
   },
+
+  -- Optional FIRST-RUN seed only: list of filenames, index = slot number.
+  -- Ignored once slots.json exists on disk (the manager is the source of truth).
+  slots = {},
+
+  -- Slot 1 falls back to this note whenever it would otherwise be unassigned,
+  -- so the window (and the manager inside it) is always reachable. false = opt out.
+  default_note = 'jot.md',
 })
 ```
 
-### Defaults (config.lua)
+### Defaults (`config.lua`)
 
-```lua
-local defaults = {
-  path = vim.fn.stdpath('data') .. '/tasks.md',
-  window = {
-    style       = 'floating',
-    width       = 0.8,
-    height      = 0.8,
-    border      = 'rounded',
-    split_width = 0.3,
-  },
-  keymaps = {
-    toggle = '<leader>t',
-  },
-}
-```
+See `lua/jot/config.lua`; all fields are optional and deep-merged over defaults
+with `vim.tbl_deep_extend('force', ...)`.
 
 ---
 
 ## Module Responsibilities
 
-### `lua/tasks/config.lua`
+### `lua/jot/config.lua`
+- Holds defaults; `config.apply(user_opts)` deep-merges; `config.get()` returns the
+  resolved singleton.
 
-- Holds the default config table.
-- Exports `config.apply(user_opts)` which deep-merges user opts over defaults
-  using `vim.tbl_deep_extend('force', defaults, user_opts)`.
-- Stores the resolved config as a module-level singleton accessible to other modules.
+### `lua/jot/slots.lua`
+Slot store, persistence, and manager UI. Module-level `bindings` maps slot index
+(1..9) → canonical absolute path.
 
-### `lua/tasks/window.lua`
+- `slots.ensure_dir(cfg)` — `mkdir -p` the notes directory.
+- `slots.store_path(cfg)` — absolute path of `slots.json`.
+- `slots.load(cfg)` — read `slots.json` (JSON `{ slots = { <filename>, ... } }`);
+  on first run, seed from `cfg.slots` then save so the store exists.
+- `slots.save(cfg)` — write `bindings` filenames back to `slots.json`.
+- `slots.resolve()` / `slots.get(slot)` — read the current bindings.
+- `slots.open_manager(cfg)` — floating editor; one filename per line, **line N =
+  slot N** (blank line leaves a slot unassigned). On close, `_commit` rebuilds
+  bindings, creates any missing files, and saves.
 
-Manages all window/buffer state. Exposes:
-
-- `window.toggle()` — opens the window if not visible; closes + autosaves if visible.
-- `window.open()` — creates or re-shows the buffer in a new window.
-- `window.close()` — writes the buffer (`:w`) then closes the window.
-
-**State tracking:**
-
-```lua
-local state = {
-  buf_id = nil,  -- buffer handle (persists across open/close for fast re-open)
-  win_id = nil,  -- window handle (nil when closed)
-}
-```
-
-**Toggle logic:**
+### `lua/jot/window.lua`
+Single active window with in-place buffer swapping.
 
 ```lua
-function window.toggle()
-  if state.win_id and vim.api.nvim_win_is_valid(state.win_id) then
-    window.close()
-  else
-    window.open()
-  end
-end
+local state = { win_id = nil, current_slot = nil }  -- current_slot = last-viewed
+local bufs  = {}  -- path -> buf_id (cached across open/close)
 ```
 
-**Buffer creation (first open):**
+- `window.open(cfg, slot)` — resolve slot → path (warn + no-op if unassigned),
+  create/reuse an unlisted markdown buffer, open the float/split, set title
+  `[N] filename`, and attach buffer-local keymaps.
+- `window.switch(cfg, slot)` — if no window, delegates to `open`; otherwise
+  autosaves the visible note and swaps the target buffer into the same window.
+- `window.close()` — autosave the visible note, close the window, then save +
+  delete every jot buffer and clear the cache (no jot buffers linger); retain
+  `current_slot` as the session's last-viewed memory.
+- `window.toggle(cfg)` — open (`current_slot or 1`) if closed, else close.
+- `window.attach_keymaps(cfg, buf)` — sets **buffer-local** normal-mode maps:
+  `switch_prefix .. 1..9` → `switch`, `manager` → open manager, `close` → close.
+- A `WinClosed` autocmd autosaves and resets `win_id` when the window is dismissed
+  via `:q` rather than the `close` map.
 
-```lua
--- Create file if missing
-if vim.fn.filereadable(config.path) == 0 then
-  vim.fn.writefile({}, config.path)
-end
+### `lua/jot/init.lua`
+Public API: `setup(opts)` (apply config, ensure dir, load slots, register the
+global toggle), plus `toggle()`, `switch(slot)`, `open_manager()`.
 
--- Create unlisted scratch buffer pointed at the file
-state.buf_id = vim.fn.bufadd(config.path)
-vim.bo[state.buf_id].buflisted = false
-vim.bo[state.buf_id].filetype  = 'markdown'
-vim.api.nvim_buf_call(state.buf_id, function() vim.cmd('silent! %d | read ' .. config.path) end)
-```
-
-**Subsequent opens:** buffer already exists; just open a new window onto it.
-
-**Floating window geometry:**
-
-```lua
-local ui     = vim.api.nvim_list_uis()[1]
-local width  = math.floor(ui.width  * cfg.window.width)
-local height = math.floor(ui.height * cfg.window.height)
-local row    = math.floor((ui.height - height) / 2)
-local col    = math.floor((ui.width  - width)  / 2)
-
-state.win_id = vim.api.nvim_open_win(state.buf_id, true, {
-  relative = 'editor',
-  width    = width,
-  height   = height,
-  row      = row,
-  col      = col,
-  style    = 'minimal',
-  border   = cfg.window.border,
-})
-```
-
-**Split window geometry (left/right):**
-
-```lua
-local width = math.floor(vim.o.columns * cfg.window.split_width)
-local cmd   = cfg.window.style == 'left' and 'topleft' or 'botright'
-vim.cmd(cmd .. ' vsplit')
-state.win_id = vim.api.nvim_get_current_win()
-vim.api.nvim_win_set_buf(state.win_id, state.buf_id)
-vim.api.nvim_win_set_width(state.win_id, width)
-```
-
-**Autosave on close:**
-
-```lua
-function window.close()
-  if state.buf_id and vim.api.nvim_buf_is_valid(state.buf_id) then
-    vim.api.nvim_buf_call(state.buf_id, function()
-      vim.cmd('silent! write')
-    end)
-  end
-  if state.win_id and vim.api.nvim_win_is_valid(state.win_id) then
-    vim.api.nvim_win_close(state.win_id, true)
-  end
-  state.win_id = nil
-end
-```
-
-### `lua/tasks/init.lua`
-
-Public API:
-
-```lua
-local M = {}
-
-function M.setup(user_opts)
-  config.apply(user_opts or {})
-
-  local toggle_key = config.get().keymaps.toggle
-  if toggle_key and toggle_key ~= false then
-    vim.keymap.set('n', toggle_key, function()
-      require('tasks.window').toggle()
-    end, { desc = 'Toggle tasks scratchpad' })
-  end
-end
-
-function M.toggle()
-  require('tasks.window').toggle()
-end
-
-return M
-```
-
-### `plugin/tasks.lua`
-
-Auto-loaded by Neovim on startup. Kept intentionally minimal — only guards against
-double-load:
-
-```lua
-if vim.g.loaded_tasks then return end
-vim.g.loaded_tasks = true
--- setup() is called by the user in their config, not here.
-```
+### `plugin/jot.lua`
+Double-load guard (`vim.g.loaded_jot`) only; `setup()` is called by the user.
 
 ---
 
@@ -239,30 +149,36 @@ vim.g.loaded_tasks = true
 
 | Scenario | Behaviour |
 |---|---|
-| File does not exist on first open | Created as empty file automatically |
-| Window closed via `:q` or `:bd` | Buffer may be deleted; state resets on next toggle |
-| Multiple nvim instances | Last-write-wins on `tasks.md`; no file locking |
-| `setup()` not called | Plugin loads but no keymap is registered |
-| `keymaps.toggle = false` | No keymap auto-registered; user calls `require('tasks').toggle()` manually |
-| Buffer already loaded | Re-uses existing buffer handle; no duplicate reads |
+| First run, no `slots.json` | Seeded from `cfg.slots`; `slots.json` written |
+| Slot 1 otherwise unassigned | Falls back to `cfg.default_note` (`jot.md`) so jot stays reachable |
+| `slots.json` exists | Loaded verbatim; `cfg.slots` seed ignored |
+| Note file missing on open/commit | Created as an empty file automatically |
+| `<leader>t` when closed | Opens last-viewed slot (slot 1 on a fresh session) |
+| `<leader>t` when open | Autosaves and closes |
+| `<leader>N` inside window | Autosaves current, swaps slot N in place |
+| `<leader>N` for unassigned slot | Warning notify; window unchanged |
+| `<leader>N` in a non-jot buffer | Nothing — the map is buffer-local |
+| Manager closed (`q`/`:q`/`ZZ`) | Assignments committed and saved to `slots.json` |
+| Switch / close | Visible note written to disk (autosave) |
+| Close (`q`/`:q`/toggle) | All jot buffers saved, then deleted; cache cleared |
+| `keymaps.toggle = false` | No global keymap; user calls `require('jot').toggle()` |
 
 ---
 
-## Non-Goals (MVP)
+## Non-Goals (current)
 
-- Project-specific task files
-- Daily task lists
-- Task syntax / parsing (just raw Markdown)
-- Telescope / fzf integration
-- Task completion tracking / checkboxes
-- Multiple concurrent scratchpad windows
+- Per-project note directories
+- Daily notes / date scaffolding
+- Note syntax parsing, checkboxes, or status-line counts
+- Telescope / fzf pickers
+- Multiple concurrent jot windows
 
 ---
 
 ## Future Work
 
 - `style = 'bottom'` horizontal split
-- Per-project task files (detect git root, store `.tasks.md` in repo)
-- Daily notes (`YYYY-MM-DD.md` in a notes directory)
-- Telescope picker across all task files
-- Optional status line component showing task count
+- Per-project note directories (git-root detection)
+- Daily notes (`YYYY-MM-DD.md`)
+- Telescope / fzf picker across the notes directory
+- Persist last-viewed slot across sessions
